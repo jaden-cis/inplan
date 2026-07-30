@@ -3,6 +3,7 @@
 import {
   checkIntegrity,
   detectLostComments,
+  detectReclassifiedSpans,
   parse,
   serialize,
   type Comment,
@@ -18,8 +19,9 @@ export interface AgentEditEvaluation {
   /** Span comments newly orphaned by this edit (link removed vs canonical). */
   lost: Comment[];
   /** Comments the caller still needs to acknowledge via --confirmed-comment-deletion before this
-   *  edit can be accepted: newly-orphaned roots, plus any reply left dangling because a confirmed
-   *  parent was removed out from under it without its own id being confirmed too. */
+   *  edit can be accepted: newly-orphaned roots, any reply left dangling because a confirmed
+   *  parent was removed out from under it without its own id being confirmed too, and any span
+   *  comment reclassified away from `anchor`/`parentId` instead of being properly orphaned. */
   unconfirmed: Comment[];
   /** Confirmed-lost comment ids removed from the accepted document. */
   removedIds: string[];
@@ -68,6 +70,15 @@ export interface AgentEditEvaluation {
  * it `anchor: "doc"`) to make it look independent and dodge confirmation entirely; trusting current's
  * shape for ancestry would fall for exactly that. Current only fills in ids canonical never had —
  * genuinely new comments added in this same edit.
+ *
+ * The same reclassification move also works directly against ANY span comment, not just a
+ * descendant's parent — relabel it `anchor: "doc"` (or give it a `parentId`) instead of dropping
+ * its anchor link, and `findOrphans`/`detectLostComments` can never flag it: they only ever look
+ * at comments that are STILL a span comment in the document being scanned, so once reclassified it
+ * reads as an ordinary, always-valid comment with no history of needing a link. `reclassified`
+ * closes that: it's gated exactly like a newly-orphaned root (added to `unconfirmed`), but a
+ * confirmed one is deliberately NOT added to `removedSet` — confirming it means "yes, I meant to
+ * reclassify this," not "delete it," so the edit is accepted with the comment's new shape intact.
  */
 export function evaluateAgentEdit(
   canonicalText: string,
@@ -78,6 +89,7 @@ export function evaluateAgentEdit(
   const canonical = parse(canonicalText);
 
   const lost = detectLostComments(canonical, current);
+  const reclassified = detectReclassifiedSpans(canonical, current);
   const deletionGraph = new Map([...current.comments, ...canonical.comments].map((c) => [c.id, c]));
 
   const removedSet = new Set(lost.filter((c) => confirmed.has(c.id)).map((c) => c.id));
@@ -102,7 +114,8 @@ export function evaluateAgentEdit(
   // same edit (never reaches `accepted`/integrity at all, so nothing else would catch it).
   const dangling = [...deletionGraph.values()].filter((c) => c.parentId !== undefined && removedSet.has(c.parentId) && !removedSet.has(c.id));
   const danglingIds = new Set(dangling.map((c) => c.id));
-  const unconfirmed = [...lost.filter((c) => !confirmed.has(c.id)), ...dangling];
+  const unconfirmedReclassified = reclassified.filter((c) => !confirmed.has(c.id));
+  const unconfirmed = [...lost.filter((c) => !confirmed.has(c.id)), ...dangling, ...unconfirmedReclassified];
 
   const integrityErrors = checkIntegrity(accepted).errors.filter(
     (e) => e.code !== "span_missing_link" && !(e.code === "missing_parent" && e.commentId !== undefined && danglingIds.has(e.commentId)),

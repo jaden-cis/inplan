@@ -138,3 +138,46 @@ describe("evaluateAgentEdit — descendant confirmation", () => {
     expect(ev.unconfirmed.map((c) => c.id)).toEqual(["cmt-rep111"]);
   });
 });
+
+describe("evaluateAgentEdit — reclassification (melly's PR #59 follow-up)", () => {
+  it("requires confirmation for a span comment relabeled anchor: doc instead of properly orphaned", () => {
+    // findOrphans/detectLostComments can't see this at all — the comment is no longer a span
+    // comment in `current`, so it's simply invisible to the orphan scan from this edit onward.
+    const reclassified = { ...comment, anchor: "doc" as const };
+    const currentReclassified = serialize({ body: "no link anymore", comments: [reclassified] });
+    const ev = evaluateAgentEdit(canonicalText, currentReclassified, new Set());
+    expect(ev.lost).toEqual([]); // confirms the classic orphan check really can't see it
+    expect(ev.unconfirmed.map((c) => c.id)).toEqual(["cmt-abc123"]);
+    expect(ev.removedIds).toEqual([]);
+  });
+
+  it("accepts the reclassification once confirmed — WITHOUT deleting the comment", () => {
+    // Confirming a reclassification means "yes, I meant to do this," not "delete it": unlike a
+    // genuinely orphaned span, the comment object stays in the accepted document with its new
+    // shape intact.
+    const reclassified = { ...comment, anchor: "doc" as const };
+    const currentReclassified = serialize({ body: "no link anymore", comments: [reclassified] });
+    const ev = evaluateAgentEdit(canonicalText, currentReclassified, new Set(["cmt-abc123"]));
+    expect(ev.unconfirmed).toEqual([]);
+    expect(ev.removedIds).toEqual([]);
+    expect(parse(ev.acceptedText).comments).toEqual([reclassified]);
+    expect(ev.integrityOk).toBe(true);
+  });
+
+  it("requires confirmation for a span comment given a parentId instead of properly orphaned", () => {
+    const other = { id: "cmt-other1", author: "a", date: "d", resolved: false, text: "other", anchor: "doc" as const };
+    const reclassified = { id: comment.id, parentId: "cmt-other1", author: "a", date: "d", resolved: false, text: "?" };
+    const canonicalWithOther = serialize({ body: "Use [Postgres](#cmt-abc123).", comments: [comment, other] });
+    const currentReclassified = serialize({ body: "no link anymore", comments: [reclassified, other] });
+    const ev = evaluateAgentEdit(canonicalWithOther, currentReclassified, new Set());
+    expect(ev.unconfirmed.map((c) => c.id)).toEqual(["cmt-abc123"]);
+  });
+
+  it("does not flag a comment that's simply, still, an ordinary orphan (link removed, still a span comment)", () => {
+    const ev = evaluateAgentEdit(canonicalText, lostText, new Set());
+    // The classic path (`lost`) already covers this — reclassification detection must not
+    // double-report the same comment under a different name.
+    expect(ev.unconfirmed.map((c) => c.id)).toEqual(["cmt-abc123"]);
+    expect(ev.unconfirmed).toHaveLength(1);
+  });
+});
