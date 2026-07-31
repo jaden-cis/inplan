@@ -296,6 +296,12 @@ export interface Api {
   /** Host-specific new-doc creation (Create Doc / Move Text to New Doc). Absent ⇒ the renderer
    *  hides those menu items (e.g. tests, or a host that can't create docs). */
   newDoc?: NewDocController | null;
+  /** Persist a pasted image's raw bytes as a file next to the open doc and return the relative
+   *  link to embed. `ext` is a bare extension guess from the clipboard MIME type (e.g. "png").
+   *  Absent ⇒ the source editor falls back to a plain-text paste (no image support, e.g. tests
+   *  or a host with nowhere to write a sibling file — a cloud doc has no filesystem at all).
+   *  Returns null on a write failure. */
+  saveAsset?(bytes: ArrayBuffer, ext: string): Promise<{ relPath: string } | null>;
   /** Desktop only: navigate the window's back/forward history of opened docs.
    *  Absent on web (the browser's own history handles it) + tests. */
   navigate?(dir: "back" | "forward"): Promise<void>;

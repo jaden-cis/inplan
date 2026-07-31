@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import MarkdownIt from "markdown-it";
+import { resolveDocPath } from "./links";
 
 // `html: true` lets markdown-it's OWN parser recognize raw HTML (as `html_block` /
 // `html_inline` tokens) with full awareness of code spans and fences — a backtick span or
@@ -64,15 +65,46 @@ md.renderer.rules.link_close = (tokens, idx, opts, env, self) => {
   return defaultLinkClose(tokens, idx, opts, env, self);
 };
 
+// A relative image src (e.g. from a pasted screenshot: "design.plan.assets/image-....png")
+// means nothing to the browser on its own — it resolves against the RENDERER's own bundled
+// index.html, not the plan document's folder. When we know the doc's absolute path (desktop
+// only; web/cloud docs have no filesystem — `docPath` is then absent/not a real path), resolve
+// the relative src against it, the same way `resolveDocPath` already resolves doc-to-doc
+// links, and rewrite it to a `file://` URL the `<img>` tag can actually load.
+type ImageEnv = { docPath?: string };
+const defaultImage = md.renderer.rules.image ?? ((tokens, idx, opts, _env, self) => self.renderToken(tokens, idx, opts));
+md.renderer.rules.image = (tokens, idx, opts, env, self) => {
+  const docPath = (env as ImageEnv).docPath;
+  const src = tokens[idx]!.attrGet("src") ?? "";
+  // Absolute paths / URLs (http:, file:, data:, //host) are left alone — only a bare relative
+  // path (what a sibling-file link always is) gets resolved against the doc.
+  if (docPath && src && !/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith("//") && !src.startsWith("/")) {
+    const normalizedDocPath = docPath.replace(/\\/g, "/");
+    if (/^([a-z]:)?\//i.test(normalizedDocPath)) {
+      const abs = resolveDocPath(normalizedDocPath, src); // never carries its own leading "/" — add it back
+      const withLeadingSlash = `/${abs.replace(/^\/+/, "")}`;
+      // encodeURI (not encodeURIComponent) leaves "/" and a Windows drive letter's ":" alone,
+      // only escaping characters actually unsafe in a URL (spaces, unicode, ...).
+      tokens[idx]!.attrSet("src", `file://${encodeURI(withLeadingSlash)}`);
+    }
+  }
+  return defaultImage(tokens, idx, opts, env, self);
+};
+
 // Tag block-level elements with their 0-based source line for cross-pane sync.
 // `tr_open` is tagged too so clicking a table cell syncs to the clicked ROW's source
 // line, not the table's first line (the cells themselves carry no line map).
+// data-end-line (tok.map's exclusive end, minus one) is the block's own LAST source line —
+// used to insert content (e.g. a pasted image) after the whole block, not mid-paragraph.
 const BLOCK_RULES = ["paragraph_open", "heading_open", "blockquote_open", "bullet_list_open", "ordered_list_open", "list_item_open", "table_open", "tr_open", "hr"];
 for (const name of BLOCK_RULES) {
   const orig = md.renderer.rules[name];
   md.renderer.rules[name] = (tokens, idx, options, env, self) => {
     const tok = tokens[idx]!;
-    if (tok.map) tok.attrSet("data-line", String(tok.map[0]));
+    if (tok.map) {
+      tok.attrSet("data-line", String(tok.map[0]));
+      tok.attrSet("data-end-line", String(tok.map[1] - 1));
+    }
     return orig ? orig(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options);
   };
 }
@@ -92,7 +124,9 @@ for (const name of ["fence", "code_block"]) {
  * `showAnchor(id)` decides whether a comment anchor renders as a highlighted link
  * (true) or as plain text (false, e.g. a resolved comment while "show resolved" is
  * off). When omitted, all anchors render as links.
+ * `docPath`, when it's the current doc's real absolute filesystem path (desktop only), lets a
+ * relative image src (e.g. a pasted screenshot) resolve to a loadable `file://` URL.
  */
-export function renderMarkdown(body: string, showAnchor?: (id: string) => boolean): string {
-  return md.render(body, { showAnchor });
+export function renderMarkdown(body: string, showAnchor?: (id: string) => boolean, docPath?: string): string {
+  return md.render(body, { showAnchor, docPath });
 }

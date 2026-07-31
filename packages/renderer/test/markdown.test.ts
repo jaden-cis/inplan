@@ -23,6 +23,53 @@ describe("renderMarkdown", () => {
     expect(lines.length).toBe(3);
     expect(new Set(lines).size).toBe(3); // distinct lines, not all the table's first line
   });
+
+  it("tags a single-line paragraph with matching data-line and data-end-line", () => {
+    const html = renderMarkdown("intro\n\nOne line.\n");
+    expect(html).toMatch(/data-line="2" data-end-line="2"/);
+  });
+
+  it("tags a multi-line paragraph's data-end-line as its LAST line, not its first (so an insert-after lands past the whole paragraph)", () => {
+    const html = renderMarkdown("line one\nline two\nline three\n");
+    expect(html).toMatch(/data-line="0" data-end-line="2"/);
+  });
+});
+
+describe("renderMarkdown image src resolution (pasted images)", () => {
+  it("leaves a relative image src untouched when no docPath is given", () => {
+    const html = renderMarkdown("![](plan.assets/x.png)");
+    expect(html).toContain('src="plan.assets/x.png"');
+  });
+
+  it("leaves a relative image src untouched when docPath isn't a real absolute filesystem path (e.g. a memory/cloud doc)", () => {
+    const html = renderMarkdown("![](plan.assets/x.png)", undefined, "memory://doc");
+    expect(html).toContain('src="plan.assets/x.png"');
+  });
+
+  it("resolves a relative src against a POSIX doc path into a file:// URL", () => {
+    const html = renderMarkdown("![](plan.assets/x.png)", undefined, "/home/user/project/plan.md");
+    expect(html).toContain('src="file:///home/user/project/plan.assets/x.png"');
+  });
+
+  it("resolves against a Windows doc path (backslashes, drive letter) into a well-formed file:/// URL", () => {
+    const html = renderMarkdown("![](plan.assets/x.png)", undefined, "C:\\Users\\me\\project\\plan.md");
+    expect(html).toContain('src="file:///C:/Users/me/project/plan.assets/x.png"');
+  });
+
+  it("resolves ../ segments the same way doc-to-doc links do", () => {
+    const html = renderMarkdown("![](../shared/x.png)", undefined, "/home/user/project/docs/plan.md");
+    expect(html).toContain('src="file:///home/user/project/shared/x.png"');
+  });
+
+  it("leaves an already-absolute/URL src untouched even with a docPath present", () => {
+    // file:// itself is excluded here: markdown-it's own link-destination grammar doesn't parse
+    // a triple-slash URL as an image link at all (stays literal `![...]` text) regardless of
+    // our rule — a pre-existing markdown-it limitation, not something our paste feature produces.
+    for (const src of ["http://example.com/x.png", "https://example.com/x.png", "data:image/png;base64,AAAA", "/already/abs.png"]) {
+      const html = renderMarkdown(`![](${src})`, undefined, "/home/user/project/plan.md");
+      expect(html).toContain(`src="${src}"`);
+    }
+  });
 });
 
 describe("renderMarkdown comment anchors", () => {

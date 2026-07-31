@@ -681,6 +681,46 @@ export function App(props: EditorProps = {}): JSX.Element {
     [apply],
   );
 
+  // A pasted image: hand the raw bytes to the host, which writes them next to the open doc
+  // (e.g. `<docname>.assets/image-...png`) and returns the relative link to embed. Absent
+  // `saveAsset` (a host with nowhere to write a sibling file, e.g. a cloud doc) ⇒ no-op.
+  const onPasteImage = useCallback(async (bytes: ArrayBuffer, mime: string): Promise<string | null> => {
+    const saveAsset = hostApi().saveAsset;
+    if (!saveAsset) return null;
+    const ext = mime.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
+    const saved = await saveAsset(bytes, ext);
+    return saved?.relPath ?? null;
+  }, []);
+
+  // Same image-paste as the Source pane, but pasting directly into the (read-only) preview:
+  // insert the link on a new line right after the active (blue-highlighted) block — its
+  // data-end-line, not just data-line, so a paste into a multi-line paragraph lands after
+  // the WHOLE paragraph rather than splitting it. No active block (nothing clicked/synced
+  // yet) ⇒ append at the end of the document.
+  const onPreviewPasteImage = useCallback(
+    async (e: React.ClipboardEvent<HTMLDivElement>) => {
+      if (editingLocked) return;
+      const file = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));
+      if (!file) return; // no image on the clipboard — leave native paste (a no-op here) alone
+      e.preventDefault();
+      const bytes = await file.arrayBuffer();
+      const relPath = await onPasteImage(bytes, file.type);
+      if (!relPath) return;
+      const cur = docRef.current;
+      const lines = cur.body.split("\n");
+      let insertAfter = lines.length - 1;
+      if (activePreviewLine != null) {
+        const blockEl = previewRef.current?.querySelector(`[data-line="${activePreviewLine}"]`);
+        const endLine = blockEl?.getAttribute("data-end-line");
+        insertAfter = endLine != null ? Number(endLine) : activePreviewLine;
+      }
+      insertAfter = Math.min(Math.max(insertAfter, 0), lines.length - 1);
+      lines.splice(insertAfter + 1, 0, "", `![](${relPath})`);
+      apply({ ...cur, body: lines.join("\n") }, { type: "image_pasted", payload: {} });
+    },
+    [editingLocked, onPasteImage, activePreviewLine, apply],
+  );
+
   // Auto-resolve: when the setting is on, resolve threads the agent suggested (its `may_resolve`
   // on the thread's last comment). Runs on load + when the setting flips on. We remember which
   // threads we've auto-resolved (`autoResolvedRef`) and skip them on later passes, so undoing an
@@ -1356,8 +1396,8 @@ export function App(props: EditorProps = {}): JSX.Element {
 
   const resolvedIds = useMemo(() => new Set(doc.comments.filter((c) => c.resolved).map((c) => c.id)), [doc.comments]);
   const previewHtml = useMemo(
-    () => renderMarkdown(doc.body, (id) => showResolvedOrphaned || !resolvedIds.has(id)),
-    [doc.body, resolvedIds, showResolvedOrphaned],
+    () => renderMarkdown(doc.body, (id) => showResolvedOrphaned || !resolvedIds.has(id), docPathRef.current),
+    [doc.body, resolvedIds, showResolvedOrphaned, docPathRef.current],
   );
 
   // Highlight find matches via the CSS Custom Highlight API (non-destructive
@@ -1790,7 +1830,9 @@ export function App(props: EditorProps = {}): JSX.Element {
           ) : (
           <div
             className="ap-rendered"
+            tabIndex={0}
             dangerouslySetInnerHTML={{ __html: previewHtml }}
+            onPaste={onPreviewPasteImage}
             onClick={(e) => {
               const target = e.target as HTMLElement;
               const a = target.closest("a");
@@ -1854,6 +1896,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                 commentsForCopy={commentsForCopy}
                 onCutComments={editingLocked ? undefined : onCutComments}
                 onPasteComments={editingLocked ? undefined : onPasteComments}
+                onPasteImage={editingLocked ? undefined : onPasteImage}
               />
               </EditorErrorBoundary>
             )}
